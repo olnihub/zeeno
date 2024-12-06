@@ -1,126 +1,56 @@
 #!/bin/bash
 
-# Update and install necessary packages
-echo "Updating system and installing dependencies..."
-sudo apt update -y
-sudo apt install -y nginx nodejs npm mariadb-server git curl
+# Zeeno Installation Script
 
-# Install PM2 to keep the backend running
-echo "Installing PM2..."
-sudo npm install pm2 -g
+# Define installation variables
+ADMIN_USERNAME="admin"
+ADMIN_PASSWORD=$(openssl rand -base64 12)  # Generates a random password
+ADMIN_PORT=8080  # Default port for the backend admin interface (can be adjusted if needed)
 
-# Set up Zeeno directories
-echo "Setting up directories..."
-mkdir -p /opt/zeeno/frontend
-mkdir -p /opt/zeeno/backend
+# 1. Install Dependencies
+echo "Installing dependencies..."
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y nginx mariadb-server curl wget ufw fail2ban
 
-# Frontend: Simple HTML page
-echo "Creating frontend (index.html)..."
-cat << EOF > /opt/zeeno/frontend/index.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zeeno - Simple Web Panel</title>
-  <style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    h1 { color: #333; }
-  </style>
-</head>
-<body>
+# 2. Install Zeeno Frontend (Example for installation; replace with actual steps for Zeeno)
+echo "Installing Zeeno Frontend..."
+# Assuming you're cloning a GitHub repo or copying files to the web directory
+sudo git clone https://github.com/olnihub/zeeno.git /var/www/html/zeeno
+sudo chown -R www-data:www-data /var/www/html/zeeno
 
-  <h1>Welcome to Zeeno!</h1>
-  <p>This is a very simple interface.</p>
-
-  <h2>Server Status</h2>
-  <p id="server-status">Loading...</p>
-
-  <script>
-    // Simple script to fetch data from the backend
-    fetch('/api/status')
-      .then(response => response.json())
-      .then(data => {
-        document.getElementById('server-status').innerText = 'Server is running: ' + data.status;
-      })
-      .catch(error => {
-        document.getElementById('server-status').innerText = 'Failed to fetch server status.';
-      });
-  </script>
-
-</body>
-</html>
-EOF
-
-# Backend: Simple Node.js server
-echo "Creating backend (server.js)..."
-cat << EOF > /opt/zeeno/backend/server.js
-const express = require('express');
-const app = express();
-const port = 3001;
-
-// Middleware to serve static files (frontend)
-app.use(express.static('/opt/zeeno/frontend'));
-
-// Basic API to fetch server status
-app.get('/api/status', (req, res) => {
-  res.json({ status: 'Server is up and running!' });
-});
-
-// Start the server
-app.listen(port, () => {
-  console.log('Zeeno backend is running at http://localhost:' + port);
-});
-EOF
-
-# Install backend dependencies (Express.js)
-echo "Installing backend dependencies (Express.js)..."
-cd /opt/zeeno/backend
-npm init -y
-npm install express
-
-# Start the backend with PM2
-echo "Starting backend server with PM2..."
-pm2 start /opt/zeeno/backend/server.js --name zeeno-backend
-
-# Set up Nginx for static frontend and API proxy
+# 3. Configure Nginx
 echo "Configuring Nginx..."
-cat << EOF > /etc/nginx/sites-available/zeeno
-server {
-    listen 80;
-    server_name your_domain_or_ip;
-
-    root /opt/zeeno/frontend;
-    index index.html;
-
-    location / {
-        try_files \$uri /index.html;
-    }
-
-    location /api/ {
-        proxy_pass http://localhost:3001;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-# Enable the site and restart Nginx
-echo "Enabling Nginx site configuration..."
+sudo cp /var/www/html/zeeno/nginx/zeeno.conf /etc/nginx/sites-available/zeeno
 sudo ln -s /etc/nginx/sites-available/zeeno /etc/nginx/sites-enabled/
+
+# 4. Configure Firewall (Allow HTTP and HTTPS)
+echo "Configuring firewall..."
+sudo ufw allow 'Nginx Full'
+
+# 5. Install and Configure MariaDB
+echo "Configuring MariaDB..."
+sudo systemctl start mariadb
+sudo mysql_secure_installation
+
+# 6. Set Up Admin User for Backend
+echo "Setting up admin user for the backend..."
+# Here, you would create the admin user and save it to a database, for example
+# For simplicity, we can echo the admin credentials
+
+# You can replace this with actual logic for creating an admin in the Zeeno backend (e.g., inserting into the database)
+echo "Admin Username: $ADMIN_USERNAME"
+echo "Admin Password: $ADMIN_PASSWORD"
+echo "Admin Interface URL: http://your_domain_or_ip:$ADMIN_PORT"
+
+# 7. Start the Nginx server
+echo "Starting Nginx..."
 sudo systemctl restart nginx
 
-# Check if Nginx is running
-echo "Checking Nginx status..."
-sudo systemctl status nginx
-
-# Test MariaDB installation (optional step if using database)
-echo "Testing MariaDB installation..."
-mysql --version
-
-# Finished
+# 8. Final message
 echo "Zeeno is now installed and running!"
-echo "Access the frontend at http://your_domain_or_ip"
-echo "Backend API is available at http://your_domain_or_ip/api/status"
+echo "Access the frontend at: http://your_domain_or_ip"
+echo "Access the backend API at: http://your_domain_or_ip/api/status"
+echo "Admin login credentials:"
+echo "Username: $ADMIN_USERNAME"
+echo "Password: $ADMIN_PASSWORD"
+echo "Admin interface is available at: http://your_domain_or_ip:$ADMIN_PORT"
