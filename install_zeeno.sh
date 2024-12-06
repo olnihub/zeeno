@@ -6,119 +6,162 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Variables for your domain
+# Detect Ubuntu/Debian version
+function detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS_NAME=$NAME
+        OS_VERSION=$VERSION
+    else
+        echo "Unsupported OS"
+        exit 1
+    fi
+}
+
+# Run OS detection
+detect_os
+
+# Check if the OS is Ubuntu or Debian
+if [[ $OS_NAME == "Ubuntu" || $OS_NAME == "Debian" ]]; then
+    PACKAGE_MANAGER="apt"
+    INSTALL_CMD="apt install -y"
+else
+    echo "This script only supports Ubuntu and Debian systems."
+    exit 1
+fi
+
+# Define some basic variables
 DOMAIN="yourdomain.com"
 ADMIN_EMAIL="admin@yourdomain.com"
+ADMIN_USER="admin"
+PANEL_PORT="8080"
+BACKUP_DIR="/opt/zeeno/backups"
 
-echo "Updating system..."
-apt update && apt upgrade -y
+# Update system
+echo "Updating system packages..."
+$INSTALL_CMD update -y && $INSTALL_CMD upgrade -y
 
+# Install essential packages
 echo "Installing essential packages..."
-apt install -y sudo curl wget gnupg lsb-release unzip vim ufw fail2ban git
+$INSTALL_CMD curl wget gnupg lsb-release unzip vim ufw fail2ban git
 
-# Install Nginx, MariaDB, PHP
+# Install Nginx, MariaDB, and PHP
 echo "Installing Nginx, MariaDB, and PHP..."
-apt install -y nginx mariadb-server mariadb-client php-fpm php-mysql php-cli php-xml php-mbstring php-curl php-zip
+$INSTALL_CMD nginx mariadb-server mariadb-client php-fpm php-mysql php-cli php-xml php-mbstring php-curl php-zip
 
-# Install UFW firewall and configure it
+# Install Certbot for Let's Encrypt SSL
+echo "Installing Let's Encrypt SSL..."
+$INSTALL_CMD certbot python3-certbot-nginx
+
+# Install firewall (UFW) and configure it
 echo "Configuring firewall..."
+$INSTALL_CMD ufw
 ufw allow OpenSSH
 ufw allow 'Nginx Full'
 ufw enable
 
-# Install Fail2Ban for security
-echo "Installing Fail2Ban..."
-apt install -y fail2ban
+# Enable Fail2Ban
+echo "Installing and enabling Fail2Ban..."
+$INSTALL_CMD fail2ban
 systemctl enable fail2ban
 
-# Install Let's Encrypt SSL
-echo "Installing Let's Encrypt SSL..."
-apt install -y certbot python3-certbot-nginx
+# Function to set up a custom login URL
+echo "Please enter a custom login URL slug (e.g., '/adminlogin')"
+read CUSTOM_LOGIN_URL
 
-# Start and enable Nginx and MariaDB
-systemctl start nginx
-systemctl enable nginx
-systemctl start mariadb
-systemctl enable mariadb
+# Create a basic authentication setup for the login URL
+echo "Creating a custom login page at: /var/www/html$CUSTOM_LOGIN_URL"
+mkdir -p /var/www/html$CUSTOM_LOGIN_URL
+echo "<html><body><h1>Welcome to Zeeno Admin Panel</h1></body></html>" > /var/www/html$CUSTOM_LOGIN_URL/index.html
 
-# Securing MariaDB
-echo "Securing MariaDB..."
-mysql_secure_installation
-
-# Install Node.js and other dependencies for Zeeno panel
-echo "Installing Node.js and dependencies..."
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-apt install -y nodejs npm
-
-# Clone Zeeno Web Control Panel repository
-echo "Cloning Zeeno control panel repository..."
-cd /opt
-git clone https://github.com/zeeno/zeeno.git
-
-# Go into the Zeeno directory
-cd zeeno
-
-# Install Node.js dependencies for Zeeno panel
-echo "Installing Zeeno panel dependencies..."
-npm install
-
-# Set up Zeeno web server (start it in the background)
-echo "Starting Zeeno web control panel..."
-nohup npm start &
-
-# Create a sample website for testing
-echo "Setting up a sample website..."
-ROOT_DIR="/var/www/$DOMAIN"
-mkdir -p $ROOT_DIR
-echo "Welcome to $DOMAIN" > $ROOT_DIR/index.html
-
-# Nginx config for the new site
-cat > /etc/nginx/sites-available/$DOMAIN <<EOF
+# Configure Nginx to point to the new login URL
+echo "Configuring Nginx for custom login URL..."
+cat <<EOL > /etc/nginx/sites-available/default
 server {
     listen 80;
     server_name $DOMAIN;
-    root $ROOT_DIR;
-    index index.php index.html index.htm;
-
+    
     location / {
-        try_files \$uri \$uri/ =404;
+        root /var/www/html;
+        index index.html;
     }
-
-    location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
+    
+    location $CUSTOM_LOGIN_URL {
+        root /var/www/html;
+        index index.html;
+    }
+    
+    location /admin {
+        proxy_pass http://127.0.0.1:$PANEL_PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-EOF
+EOL
 
-# Enable site and reload Nginx
-ln -s /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
-nginx -t && systemctl reload nginx
+# Test Nginx configuration and reload
+echo "Testing Nginx configuration..."
+nginx -t
+systemctl restart nginx
 
-# Setup SSL for the site using Let's Encrypt
-echo "Setting up SSL for the site..."
-certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $ADMIN_EMAIL
+# Start and secure MariaDB
+echo "Starting MariaDB and securing installation..."
+systemctl start mariadb
+mysql_secure_installation
 
-# Create an admin user and generate password
-ADMIN_USER="admin"
-ADMIN_PASS=$(openssl rand -base64 12)
+# Set up the Zeeno Admin panel (assumed to be a simple PHP app)
+echo "Setting up the Zeeno Admin Panel..."
+git clone https://github.com/olnihub/zeeno.git /opt/zeeno
+cd /opt/zeeno
+
+# Install any dependencies (e.g., PHP packages)
+composer install
+
+# Set up database and user
+echo "Creating database and user for Zeeno..."
+mysql -e "CREATE DATABASE zeeno_db;"
+mysql -e "CREATE USER 'zeeno_user'@'localhost' IDENTIFIED BY 'securepassword';"
+mysql -e "GRANT ALL PRIVILEGES ON zeeno_db.* TO 'zeeno_user'@'localhost';"
+mysql -e "FLUSH PRIVILEGES;"
+
+# Set up a cron job for backup every 24 hours
+echo "Setting up cron job for backups..."
+echo "0 0 * * * root /opt/zeeno/backup.sh" > /etc/cron.d/zeeno-backup
+
+# Set up the 2FA
+echo "Setting up 2FA for admin user..."
+# Placeholder: assuming the system uses Google Authenticator
+$INSTALL_CMD libpam-google-authenticator
+
+# Enable 2FA for the admin
+echo "Enable 2FA for the admin user by running 'google-authenticator' command as admin."
+
+# Setup backup management
+echo "Setting up backup management script..."
+mkdir -p $BACKUP_DIR
+cat <<EOL > /opt/zeeno/backup.sh
+#!/bin/bash
+tar -czf $BACKUP_DIR/zeeno_backup_$(date +%F).tar.gz /opt/zeeno
+EOL
+chmod +x /opt/zeeno/backup.sh
+
+# Install additional features (such as Panel Replication, Restore, and Cloning)
+echo "Installing Panel Replication and Cloning features..."
+git clone https://github.com/olnihub/zeeno-features.git /opt/zeeno-features
+# Placeholder for panel replication and cloning
+
+# Enable automatic updates for Zeeno
+echo "Enabling automatic updates for Zeeno..."
+cat <<EOL > /etc/cron.d/zeeno-updates
+0 0 * * 0 root git -C /opt/zeeno pull
+EOL
+
+# Set up additional features as needed, such as resource limits, Docker reverse proxy, etc.
+
+# Final notes
+echo "Zeeno is installed! Access the admin panel at http://$DOMAIN$CUSTOM_LOGIN_URL or http://$DOMAIN:$PANEL_PORT."
 echo "Admin username: $ADMIN_USER"
-echo "Admin password: $ADMIN_PASS"
-
-# Save login credentials to a file
-echo "Username: $ADMIN_USER" > /opt/zeeno/admin_credentials.txt
-echo "Password: $ADMIN_PASS" >> /opt/zeeno/admin_credentials.txt
-
-# Display installation completion message
-echo "Zeeno is now installed and running!"
-echo "Access the frontend at http://$DOMAIN"
-echo "Backend API is available at http://$DOMAIN/api/status"
-
-# Display admin credentials
-echo "To access the admin interface, use the following credentials:"
-echo "Username: admin"
-echo "Password: $ADMIN_PASS"
-echo "Go to: http://$DOMAIN to log in."
+echo "Admin password: [Generated Password]"
 
