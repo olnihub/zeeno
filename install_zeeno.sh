@@ -1,56 +1,92 @@
 #!/bin/bash
 
-# Zeeno Installation Script
+# Ensure the script runs as root
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root" 
+   exit 1
+fi
 
-# Define installation variables
-ADMIN_USERNAME="admin"
-ADMIN_PASSWORD=$(openssl rand -base64 12)  # Generates a random password
-ADMIN_PORT=8080  # Default port for the backend admin interface (can be adjusted if needed)
+echo "Updating system..."
+apt update && apt upgrade -y
 
-# 1. Install Dependencies
-echo "Installing dependencies..."
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y nginx mariadb-server curl wget ufw fail2ban
+echo "Installing essential packages..."
+apt install -y sudo curl wget gnupg lsb-release unzip vim ufw fail2ban git
 
-# 2. Install Zeeno Frontend (Example for installation; replace with actual steps for Zeeno)
-echo "Installing Zeeno Frontend..."
-# Assuming you're cloning a GitHub repo or copying files to the web directory
-sudo git clone https://github.com/olnihub/zeeno.git /var/www/html/zeeno
-sudo chown -R www-data:www-data /var/www/html/zeeno
+# Install Nginx, MariaDB, and PHP
+echo "Installing Nginx, MariaDB, and PHP..."
+apt install -y nginx mariadb-server mariadb-client php-fpm php-mysql php-cli php-xml php-mbstring php-curl php-zip
 
-# 3. Configure Nginx
-echo "Configuring Nginx..."
-sudo cp /var/www/html/zeeno/nginx/zeeno.conf /etc/nginx/sites-available/zeeno
-sudo ln -s /etc/nginx/sites-available/zeeno /etc/nginx/sites-enabled/
-
-# 4. Configure Firewall (Allow HTTP and HTTPS)
+# Install and configure UFW firewall
 echo "Configuring firewall..."
-sudo ufw allow 'Nginx Full'
+ufw allow OpenSSH
+ufw allow 'Nginx Full'
+ufw enable
 
-# 5. Install and Configure MariaDB
-echo "Configuring MariaDB..."
-sudo systemctl start mariadb
-sudo mysql_secure_installation
+# Install Fail2Ban for security
+echo "Installing Fail2Ban..."
+apt install -y fail2ban
+systemctl enable fail2ban
 
-# 6. Set Up Admin User for Backend
-echo "Setting up admin user for the backend..."
-# Here, you would create the admin user and save it to a database, for example
-# For simplicity, we can echo the admin credentials
+# Install SSL (Let's Encrypt)
+echo "Installing Let's Encrypt SSL..."
+apt install -y certbot python3-certbot-nginx
 
-# You can replace this with actual logic for creating an admin in the Zeeno backend (e.g., inserting into the database)
-echo "Admin Username: $ADMIN_USERNAME"
-echo "Admin Password: $ADMIN_PASSWORD"
-echo "Admin Interface URL: http://your_domain_or_ip:$ADMIN_PORT"
+# Start and enable Nginx and MariaDB
+systemctl start nginx
+systemctl enable nginx
+systemctl start mariadb
+systemctl enable mariadb
 
-# 7. Start the Nginx server
-echo "Starting Nginx..."
-sudo systemctl restart nginx
+# Securing MariaDB
+echo "Securing MariaDB..."
+mysql_secure_installation
 
-# 8. Final message
+# Install Node.js and other necessary software (for Zeeno panel)
+echo "Installing Node.js and dependencies..."
+curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+apt install -y nodejs npm
+
+# Clone Zeeno Web Control Panel repository
+echo "Cloning Zeeno control panel repository..."
+cd /opt
+git clone https://github.com/zeeno/zeeno.git
+
+# Go into the Zeeno directory
+cd zeeno
+
+# Install Node.js dependencies for Zeeno panel
+echo "Installing Zeeno panel dependencies..."
+npm install
+
+# Set up Zeeno web server (start it in background)
+echo "Starting Zeeno web control panel..."
+nohup npm start &
+
+# Create a sample website for testing
+echo "Setting up a sample website..."
+DOMAIN="example.com"
+ROOT_DIR="/var/www/$DOMAIN"
+mkdir -p $ROOT_DIR
+echo "Welcome to $DOMAIN" > $ROOT_DIR/index.html
+
+# Nginx config for the new site
+cat > /etc/nginx/sites-available/$DOMAIN <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    root $ROOT_DIR;
+    index index.php index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+
+# Enable site and reload Nginx
+ln -s /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+
 echo "Zeeno is now installed and running!"
-echo "Access the frontend at: http://your_domain_or_ip"
-echo "Access the backend API at: http://your_domain_or_ip/api/status"
-echo "Admin login credentials:"
-echo "Username: $ADMIN_USERNAME"
-echo "Password: $ADMIN_PASSWORD"
-echo "Admin interface is available at: http://your_domain_or_ip:$ADMIN_PORT"
+echo "Access the frontend at http://your_domain_or_ip"
+echo "Backend API is available at http://your_domain_or_ip/api/status"
